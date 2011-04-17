@@ -12,7 +12,7 @@
 #include <sys/stat.h>
 
 
-
+#define BUF_LEN 1024
 #define MIN_PORT 1024
 #define MAX_PORT 65535
 
