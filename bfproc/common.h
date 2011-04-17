@@ -16,6 +16,8 @@
 #define MIN_PORT 1024
 #define MAX_PORT 65535
 
+bool quickSelect(SOCKET sock, DWORD time_out);
+
 /*	The function Initializes the WSA global handler
 *	It returns true for success of false for failure
 */

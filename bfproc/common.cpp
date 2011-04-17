@@ -104,3 +104,46 @@ bool bindSocket(SOCKET sock,unsigned short port)
 	}
 	return true;
 }
+
+bool quickSelect(SOCKET sock, DWORD time_out)
+{
+	// Create a read fd set
+	fd_set read_fds;  
+
+	// Keep track of the biggest file descriptor
+	int fdmax = (int)sock; 
+
+	// Keep trying until successful or error occurred
+
+		// Use select with 100k usec timeout
+		timeval timeout;
+		timeout.tv_sec = 0;
+		timeout.tv_usec = time_out;
+
+		// clear the master and temp sets
+		FD_ZERO(&read_fds);
+
+		// Save the server socket on read_fds set
+		FD_SET(sock, &read_fds);
+		// Perform select with one second timeout
+		int status = select(fdmax + 1, &read_fds, NULL, NULL, &timeout);
+		if (status > 0)
+		{
+			// Is that the fd we were looking for?
+			if (FD_ISSET(sock, &read_fds))
+			{
+				// Our socket is ready for reading!
+				return true;
+			}
+		}
+		else if (status == SOCKET_ERROR)
+		{
+			// Notify error and break the loop
+			fprintf(stderr,"Unable to perform select\n");
+			return false;
+		}
+
+
+
+	return false;
+}

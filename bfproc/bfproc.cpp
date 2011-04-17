@@ -4,31 +4,61 @@
 
 /* struct to hold the node's neighbors */
 struct neighbor {
+	bool started;
 	char *ip;
 	unsigned short port;	
 	int cost;
 };
 
-/*	struct to hold the node's data. 
-	the threads are going to change some of these fields constantly */
+/*
+ *	struct to hold the node's data. 
+ *	the threads are going to change some of these fields constantly
+ */
 struct nodeData {
 	struct neighbor* neighbors;
 	int procid;
 	unsigned short localport;
+	DWORD STARTUPTIME;
+	DWORD SHUTDOWNTIME;
 	DWORD LIFETIME;
 	DWORD HELLOTIMEOUT;
 	DWORD MAXTIME;
+	int myRoot;
+	int myCost;
+	DWORD myRootTime;	
 };
 
+/*	return true if LIFETIME of the node has expired and false o.w. */
+bool lifetimeExpired(struct nodeData* nodeData) {
+	return GetTickCount() > (nodeData->SHUTDOWNTIME);
+}
+
+/*	
+ *	this function gets a buffer that contains a message from one of the neighbors nodes
+ *	and updates this node's parameters (or not) according to the new information
+ */
+int updateNode(struct nodeData* nodeData, char* recvBuf) {
+	// TODO
+}
+
+/*
+ *	this thread is responsible of sending update messages to one of the neighbors 
+ *	each neighbor will get it's own thread
+ */
 int neighborThread(struct nodeData* nodeData){
 	// TODO
 }
 
+/*
+ *	this thread is responsible for listening for update messages on localport
+ *	from other nodes. only one thread like this exist during the run of the program
+ *	and when LIFETIME expires the thread shuts down and the program ends
+*/
 int listenerThread(struct nodeData* nodeData) {
 	char recvBuf[BUF_LEN];
-    sockaddr_in SenderAddr;
-    int SenderAddrSize = sizeof (SenderAddr);
-	
+	sockaddr_in SenderAddr;
+	int SenderAddrSize = sizeof (SenderAddr);
+
 
 	/* create new socket for listener */
 	SOCKET listenSocket;
@@ -37,20 +67,26 @@ int listenerThread(struct nodeData* nodeData) {
 		WSACleanup();
 		exit(-1);
 	}
-	/* bind socket to port */
+	/* bind socket to localport */
 	if(!bindSocket(listenSocket,nodeData->localport)){
 		closesocket(listenSocket);
 		WSACleanup();
 		exit(-1);
 	}
 	int rv;
-	while (/*lifetime is not over yet */) {
-		rv = recvfrom(listenSocket,recvBuf,BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
-		if (rv < 0) {
-        wprintf(L"recvfrom failed with error %d\n", WSAGetLastError());
-        return 1;
-    }
+	/* continue listen for messages for entire lifetime of node */
+	while (!lifetimeExpired(nodeData)) {
+		/* perform a quick select, make sure we don't block too much */
+		if (quickSelect(listenSocket, (nodeData->SHUTDOWNTIME - GetTickCount()))) {
+			rv = recvfrom(listenSocket,recvBuf,BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
+			if (rv < 0) {
+				fprintf(stderr,"recvfrom() failed: %ld.\n", WSAGetLastError());
+				exit(-1);
+			}
+			updateNode(nodeData, recvBuf);
+		}
 	}
+	exit(0);
 }
 
 
@@ -90,7 +126,7 @@ void main(int argc,char* argv[]) {
 		fprintf(stderr, "invalid LIFETIME value [%s]\n",lifetime_arg);
 		exit(-1);
 	}
-	thisNode.LIFETIME = lifetime;
+	thisNode.LIFETIME = lifetime * 1000;
 	/* extract and validate hellotimeout argument */
 	DWORD hellotimeout;
 	rv = sscanf(hellotimeout_arg,"%u",&hellotimeout);
@@ -98,7 +134,7 @@ void main(int argc,char* argv[]) {
 		fprintf(stderr, "invalid HELLOTIMEOUT value [%s]\n",hellotimeout_arg);
 		exit(-1);
 	}
-	thisNode.LIFETIME = lifetime;
+	thisNode.HELLOTIMEOUT = hellotimeout * 1000;
 	/* extract and validate maxtime argument */
 	DWORD maxtime;
 	rv = sscanf(maxtime_arg,"%u",&maxtime);
@@ -106,7 +142,7 @@ void main(int argc,char* argv[]) {
 		fprintf(stderr, "invalid MAXTIME value [%s]\n",maxtime_arg);
 		exit(-1);
 	}
-	thisNode.LIFETIME = lifetime;
+	thisNode.MAXTIME = maxtime * 1000;
 
 	/* process the neighbors list */
 	int numOfNeighbors = (argc-6)/3;
@@ -141,13 +177,17 @@ void main(int argc,char* argv[]) {
 			exit(-1);
 		}
 		thisNode.neighbors[i].cost = neighborCost;
+		thisNode.neighbors[i].started = false;
 	}
 
-	/* END OF INITIALIZATION AND VALIDATION STUFF */
+	/* initialize WinSock Library */
+	if(!initWSA()) exit(-1);
 
-	//initialize WinSock Library
-	if(!initWSA())
-		exit(-1);
+	/* initialize the time the node is up and running */
+	thisNode.STARTUPTIME = GetTickCount();
+	thisNode.SHUTDOWNTIME = thisNode.STARTUPTIME + thisNode.LIFETIME;
+
+	/* END OF INITIALIZATION AND VALIDATION STUFF */
 
 	/* TODO create listener thread */
 
