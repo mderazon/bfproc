@@ -8,6 +8,28 @@ typedef struct neighbor {
 	int cost;
 };
 
+typedef struct nodeData {
+	int procid;
+	unsigned short localport;
+	DWORD LIFETIME;
+	DWORD HELLOTIMEOUT;
+	DWORD MAXTIME;
+}nodeData;
+
+
+struct threadData {
+	neighbor* neighborData;
+};
+
+
+int listenForMessages() {
+	SOCKET s_socket;
+	if(!createSocket(s_socket))
+	{
+		WSACleanup();
+		exit(-1);
+	}
+}
 
 
 void main(int argc,char* argv[]) {
@@ -38,8 +60,7 @@ void main(int argc,char* argv[]) {
 			int j; scanf("%d",&j);
 			exit(-1);
 		}
-		neighbors[i].ip = neighborIP;
-		
+		neighbors[i].ip = neighborIP;		
 		/* validates neighbor's port */
 		unsigned short neighborPort;
 		int rv = sscanf(argv[i+7],"%u",&neighborPort);
@@ -50,10 +71,9 @@ void main(int argc,char* argv[]) {
 			exit(-1);
 		}
 		neighbors[i].port = neighborPort;
-
 		/* validates neighbor's port */
 		int neighborCost;
-		int rv = sscanf(argv[i+8],"%u",&neighborCost);
+		rv = sscanf(argv[i+8],"%u",&neighborCost);
 		if(neighborCost < 1){
 			fprintf(stderr, "invalid neighbor's cost [%s]\n",argv[i+8]);
 			printf("Press any key to continue\n");
@@ -62,6 +82,17 @@ void main(int argc,char* argv[]) {
 		}
 		neighbors[i].cost = neighborCost;
 	}
+
+	//initialize WinSock Library
+	if(!initWSA())
+		exit(-1);
+	SOCKET listenSocket;
+	if(!createSocket(listenSocket))
+	{
+		WSACleanup();
+		exit(-1);
+	}
+
 
 	free(neighbors);
 	exit(0);
