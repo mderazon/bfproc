@@ -5,6 +5,7 @@
 /* struct to hold the node's neighbors */
 struct neighbor {
 	bool started;
+	int procid;
 	char *ip;
 	unsigned short port;	
 	int cost;
@@ -15,8 +16,10 @@ struct neighbor {
  *	the threads are going to change some of these fields constantly
  */
 struct nodeData {
+	bool updated;
 	struct neighbor* neighbors;
 	int procid;
+	int parent;
 	unsigned short localport;
 	DWORD STARTUPTIME;
 	DWORD SHUTDOWNTIME;
@@ -26,6 +29,7 @@ struct nodeData {
 	int myRoot;
 	int myCost;
 	DWORD myRootTime;	
+	HANDLE mutex;
 };
 
 /*	return true if LIFETIME of the node has expired and false o.w. */
@@ -33,26 +37,94 @@ bool lifetimeExpired(struct nodeData* nodeData) {
 	return GetTickCount() > (nodeData->SHUTDOWNTIME);
 }
 
+/* deserialize the message received
+char* ptr = recvBuf;
+int rv;
+serialize the data members to be sent 
+rv = sprintf(ptr,"%d",nodeData->myRoot);
+ptr += rv;
+*ptr = ' ';
+rv = sprintf(ptr,"%d",nodeData->myCost);
+ptr += rv;
+*ptr = ' ';
+rv = sprintf(ptr,"%d",nodeData->procid);
+ptr += rv;
+*ptr = ' ';
+rv = sprintf(ptr,"%d",nodeData->myRootTime);
+ptr += rv;
+*ptr = 0;
+*/
+
 /*	
- *	this function gets a buffer that contains a message from one of the neighbors nodes
- *	and updates this node's parameters (or not) according to the new information
- */
-int updateNode(struct nodeData* nodeData, char* recvBuf) {
-	// TODO
+*	this function gets a buffer that contains a message from one of the neighbors nodes
+*	and updates this node's parameters (or not) according to the new information
+*/
+int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
+	char* ptr = recvBuf;
+	int rv;
+	DWORD waitResult;
+	int newRoot, newCost, newId;
+	DWORD newRootTime;
+	/* deserialize the data members fom the buffer */
+	rv = sscanf(ptr,"%d",newRoot);
+	ptr += rv+1;
+	rv = sscanf(ptr,"%d",newCost);
+	ptr += rv+1;
+	rv = sscanf(ptr,"%d",newId);
+	ptr += rv+1;
+	rv = sscanf(ptr,"%d",newRootTime);
+	/* wait for the mutex to be free. block until it's available. */
+	waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
+	switch (waitResult)
+	{
+		/* the thread got ownership of the mutex */
+		case WAIT_OBJECT_0: 
+			__try { 
+				int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
+				int updatedNewCost = newCost + nodeData->neighbors[neighbor].cost ;
+				/* check the conditions to update the node data according to the new message */
+				if((newRoot < nodeData->myRoot)||
+					(newRoot == nodeData->myRoot && updatedNewCost < updatedMyCost )||
+					(newRoot == nodeData->myRoot && updatedNewCost == updatedMyCost &&
+					nodeData->neighbors[neighbor].procid < nodeData->procid))
+				{
+					nodeData->updated = true;
+					nodeData->myRoot = newRoot;
+					nodeData->myCost = updatedNewCost;
+					nodeData->parent = nodeData->neighbors[neighbor].procid;
+					nodeData->myRootTime = newRootTime /* - TODO passed time since */;
+				}
+				/* nothing to update */
+				else nodeData->updated = false;
+			} 	
+			__finally { 
+				/* release ownership of the mutex object in any case */
+				if (! ReleaseMutex(nodeData->mutex)) { 
+					fprintf(stderr, "ReleaseMutex(): unable to release mutex");
+					return -1;
+				} 
+			} 
+			break; 
+			// The thread got ownership of an abandoned mutex. something bad happened... */
+		case WAIT_ABANDONED: 
+			return -1; 
+	}
+
+
 }
 
 /*
- *	this thread is responsible of sending update messages to one of the neighbors 
- *	each neighbor will get it's own thread
- */
+*	this thread is responsible of sending update messages to one of the neighbors 
+*	each neighbor will get it's own thread
+*/
 int neighborThread(struct nodeData* nodeData){
 	// TODO
 }
 
 /*
- *	this thread is responsible for listening for update messages on localport
- *	from other nodes. only one thread like this exist during the run of the program
- *	and when LIFETIME expires the thread shuts down and the program ends
+*	this thread is responsible for listening for update messages on localport
+*	from other nodes. only one thread like this exist during the run of the program
+*	and when LIFETIME expires the thread shuts down and the program ends
 */
 int listenerThread(struct nodeData* nodeData) {
 	char recvBuf[BUF_LEN];
@@ -78,7 +150,7 @@ int listenerThread(struct nodeData* nodeData) {
 	while (!lifetimeExpired(nodeData)) {
 		/* perform a quick select, make sure we don't block too much */
 		if (quickSelect(listenSocket, (nodeData->SHUTDOWNTIME - GetTickCount()))) {
-			rv = recvfrom(listenSocket,recvBuf,BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
+			rv = recvfrom(listenSocket, recvBuf, BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
 			if (rv < 0) {
 				fprintf(stderr,"recvfrom() failed: %ld.\n", WSAGetLastError());
 				exit(-1);
@@ -179,13 +251,20 @@ void main(int argc,char* argv[]) {
 		thisNode.neighbors[i].cost = neighborCost;
 		thisNode.neighbors[i].started = false;
 	}
-
-	/* initialize WinSock Library */
-	if(!initWSA()) exit(-1);
-
+	/* turn the update flag on for the node to signal that it's okay to send updates */
+	thisNode.updated = true;
+	/* initialize the mutex */
+	thisNode.mutex = CreateMutex(NULL, FALSE, NULL);
+	if (thisNode.mutex == NULL){
+		fprintf(stderr, "CreateMutex error: %d\n", GetLastError());
+		exit(-1);
+	}
 	/* initialize the time the node is up and running */
 	thisNode.STARTUPTIME = GetTickCount();
 	thisNode.SHUTDOWNTIME = thisNode.STARTUPTIME + thisNode.LIFETIME;
+
+	/* initialize WinSock Library */
+	if(!initWSA()) exit(-1);
 
 	/* END OF INITIALIZATION AND VALIDATION STUFF */
 
