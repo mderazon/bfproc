@@ -37,23 +37,24 @@ bool lifetimeExpired(struct nodeData* nodeData) {
 	return GetTickCount() > (nodeData->SHUTDOWNTIME);
 }
 
-/* deserialize the message received
-char* ptr = recvBuf;
-int rv;
-serialize the data members to be sent 
-rv = sprintf(ptr,"%d",nodeData->myRoot);
-ptr += rv;
-*ptr = ' ';
-rv = sprintf(ptr,"%d",nodeData->myCost);
-ptr += rv;
-*ptr = ' ';
-rv = sprintf(ptr,"%d",nodeData->procid);
-ptr += rv;
-*ptr = ' ';
-rv = sprintf(ptr,"%d",nodeData->myRootTime);
-ptr += rv;
-*ptr = 0;
-*/
+/* take the node data and put them as a string in buf so it could be sent to all neighbors */
+int serializeMessage(struct nodeData* nodeData, char* buf) {
+	char* ptr = buf;
+	int rv;
+	rv = sprintf(ptr,"%d",nodeData->myRoot);
+	ptr += rv;
+	*ptr = ' ';
+	rv = sprintf(ptr,"%d",nodeData->myCost);
+	ptr += rv;
+	*ptr = ' ';
+	rv = sprintf(ptr,"%d",nodeData->procid);
+	ptr += rv;
+	*ptr = ' ';
+	rv = sprintf(ptr,"%d",nodeData->myRootTime);
+	ptr += rv;
+	*ptr = 0;
+	return 0;
+}
 
 /*	
 *	this function gets a buffer that contains a message from one of the neighbors nodes
@@ -105,7 +106,7 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 				} 
 			} 
 			break; 
-			// The thread got ownership of an abandoned mutex. something bad happened... */
+			/* the thread got ownership of an abandoned mutex. something bad happened... */
 		case WAIT_ABANDONED: 
 			return -1; 
 	}
