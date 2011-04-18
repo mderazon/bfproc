@@ -1,6 +1,4 @@
-
 #include "common.h"
-
 
 /* struct to hold the node's neighbors */
 struct neighbor {
@@ -12,12 +10,13 @@ struct neighbor {
 };
 
 /*
- *	struct to hold the node's data. 
- *	the threads are going to change some of these fields constantly
- */
+*	struct to hold the node's data. 
+*	the threads are going to change some of these fields constantly
+*/
 struct nodeData {
 	bool updated;
 	struct neighbor* neighbors;
+	int numOfNeighbors;
 	int procid;
 	int parent;
 	unsigned short localport;
@@ -35,6 +34,22 @@ struct nodeData {
 /*	return true if LIFETIME of the node has expired and false o.w. */
 bool lifetimeExpired(struct nodeData* nodeData) {
 	return GetTickCount() > (nodeData->SHUTDOWNTIME);
+}
+
+/* gets sockaddr_in of the sneder of the message and returns the neighbor's number in this node neighbors list */
+int whichNeighbor(struct nodeData* nodeData, struct sockaddr_in* SenderAddr){
+	unsigned short senderPort = ntohs(SenderAddr->sin_port);
+	char senderIP[BUF_LEN];
+	strcpy(senderIP, inet_ntoa(SenderAddr->sin_addr));	
+	int i;
+	/* look for the neighbor in the nodeData neighbors list */
+	for(i=0; i < nodeData->numOfNeighbors; i++){
+		if (senderIP == nodeData->neighbors[i].ip && senderPort == nodeData->neighbors[i].port){
+			return i;
+		}
+	}
+	/* neighbor not found returning error */
+	return -1;
 }
 
 /* take the node data and put them as a string in buf so it could be sent to all neighbors */
@@ -64,61 +79,69 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	char* ptr = recvBuf;
 	int rv;
 	DWORD waitResult;
-	int newRoot, newCost, newId;
+	int newRoot, newCost, neighborId;
 	DWORD newRootTime;
 	/* deserialize the data members fom the buffer */
 	rv = sscanf(ptr,"%d",newRoot);
 	ptr += rv+1;
 	rv = sscanf(ptr,"%d",newCost);
 	ptr += rv+1;
-	rv = sscanf(ptr,"%d",newId);
+	rv = sscanf(ptr,"%d",neighborId);
 	ptr += rv+1;
 	rv = sscanf(ptr,"%d",newRootTime);
-	/* wait for the mutex to be free. block until it's available. */
-	waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
-	switch (waitResult)
+
+	int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
+	int updatedNewCost = newCost + nodeData->neighbors[neighbor].cost ;
+	/* check the conditions to update the node data according to the new message */
+	if((newRoot < nodeData->myRoot)||
+		(newRoot == nodeData->myRoot && updatedNewCost < updatedMyCost )||
+		(newRoot == nodeData->myRoot && updatedNewCost == updatedMyCost &&
+		nodeData->neighbors[neighbor].procid < nodeData->procid))
 	{
-		/* the thread got ownership of the mutex */
+		/* wait for the mutex to be free. block until it's available. */
+		waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
+		switch (waitResult)
+		{
+		/* the thread got ownership of the mutex. entering critical section */
 		case WAIT_OBJECT_0: 
 			__try { 
-				int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
-				int updatedNewCost = newCost + nodeData->neighbors[neighbor].cost ;
-				/* check the conditions to update the node data according to the new message */
-				if((newRoot < nodeData->myRoot)||
-					(newRoot == nodeData->myRoot && updatedNewCost < updatedMyCost )||
-					(newRoot == nodeData->myRoot && updatedNewCost == updatedMyCost &&
-					nodeData->neighbors[neighbor].procid < nodeData->procid))
-				{
-					nodeData->updated = true;
-					nodeData->myRoot = newRoot;
-					nodeData->myCost = updatedNewCost;
-					nodeData->parent = nodeData->neighbors[neighbor].procid;
-					nodeData->myRootTime = newRootTime /* - TODO passed time since */;
-				}
-				/* nothing to update */
-				else nodeData->updated = false;
+				/* check if this is the first time we get this neighbor so we can update it's process id */
+				if (nodeData->neighbors[neighbor].procid == -1)		
+					nodeData->neighbors[neighbor].procid == neighborId;
+				nodeData->myRoot = newRoot;
+				nodeData->myCost = updatedNewCost;
+				nodeData->parent = nodeData->neighbors[neighbor].procid;
+				nodeData->myRootTime = newRootTime /* - TODO passed time since */;
+				nodeData->updated = true;
 			} 	
 			__finally { 
 				/* release ownership of the mutex object in any case */
-				if (! ReleaseMutex(nodeData->mutex)) { 
+				if (! ReleaseMutex(nodeData->mutex)) {
 					fprintf(stderr, "ReleaseMutex(): unable to release mutex");
 					return -1;
-				} 
-			} 
+				}
+			}
 			break; 
-			/* the thread got ownership of an abandoned mutex. something bad happened... */
+		/* the thread got ownership of an abandoned mutex. something bad happened... */
 		case WAIT_ABANDONED: 
 			return -1; 
+		}		
 	}
-
+		if (nodeData->updated) {
+			// TODO possibly print an update  (or only print when sending message)
+		}
+	/* nothing to update */
+	else {
+		nodeData->updated = false;
+		fprintf(stderr, "time=%u\tReceived update from %s, No change",GetTickCount(),nodeData->neighbors[neighbor].ip);
+	}
 
 }
 
 /*
-*	this thread is responsible of sending update messages to one of the neighbors 
-*	each neighbor will get it's own thread
+*	this thread is responsible of sending update messages to all the neighbors
 */
-int neighborThread(struct nodeData* nodeData){
+int neighborsThread(struct nodeData* nodeData){
 	// TODO
 }
 
@@ -156,7 +179,11 @@ int listenerThread(struct nodeData* nodeData) {
 				fprintf(stderr,"recvfrom() failed: %ld.\n", WSAGetLastError());
 				exit(-1);
 			}
-			updateNode(nodeData, recvBuf);
+			/* check from which neighbor this message came from */
+			int neighborId = whichNeighbor(nodeData, &SenderAddr);
+			/* update the node if necessary */
+			updateNode(nodeData, recvBuf, neighborId); // TODO add error handling if have time
+
 		}
 	}
 	exit(0);
@@ -219,6 +246,7 @@ void main(int argc,char* argv[]) {
 
 	/* process the neighbors list */
 	int numOfNeighbors = (argc-6)/3;
+	thisNode.numOfNeighbors = numOfNeighbors;
 	thisNode.neighbors = (neighbor*) malloc(numOfNeighbors * sizeof(struct neighbor));
 	for (int i = 0; i < numOfNeighbors; i++){
 		/* validates neighbor's IP */
