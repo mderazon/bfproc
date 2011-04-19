@@ -2,7 +2,7 @@
 
 /* struct to hold the node's neighbors */
 struct neighbor {
-	bool started;
+	DWORD lastMessageRecvTime;
 	int procid;
 	char *ip;
 	unsigned short port;	
@@ -14,7 +14,7 @@ struct neighbor {
 *	the threads are going to change some of these fields constantly
 */
 struct nodeData {
-	bool updated;
+	HANDLE updateEvent;
 	struct neighbor* neighbors;
 	int numOfNeighbors;
 	int procid;
@@ -23,6 +23,7 @@ struct nodeData {
 	DWORD STARTUPTIME;
 	DWORD SHUTDOWNTIME;
 	DWORD LIFETIME;
+	DWORD lastMessagSentTime;
 	DWORD HELLOTIMEOUT;
 	DWORD MAXTIME;
 	int myRoot;
@@ -52,7 +53,8 @@ int whichNeighbor(struct nodeData* nodeData, struct sockaddr_in* SenderAddr){
 	return -1;
 }
 
-/* take the node data and put them as a string in buf so it could be sent to all neighbors */
+/*	take the node data and put them as a string in buf so it could be sent to all neighbors 
+*	sets the data as the following string: "myRoot myCost procid myRootTime" */
 int serializeMessage(struct nodeData* nodeData, char* buf) {
 	char* ptr = buf;
 	int rv;
@@ -70,6 +72,74 @@ int serializeMessage(struct nodeData* nodeData, char* buf) {
 	*ptr = 0;
 	return 0;
 }
+
+
+int sendMessage(struct nodeData* nodeData){
+	int rv, i;
+	struct sockaddr_in recvAddr;
+	char sendBuf[BUF_LEN];
+	/* create new socket to send to neighbor */
+	SOCKET sendSocket;
+	if(!createSocket(sendSocket))
+	{
+		WSACleanup();
+		exit(-1);
+	}
+	/* bind the socket to use the localport for sending too */
+	if(!bindSocket(sendSocket, nodeData->localport)){
+		closesocket(sendSocket);
+		WSACleanup();
+		exit(-1);
+	}
+	for (i=0; i<nodeData->numOfNeighbors; i++){
+		recvAddr.sin_family = AF_INET;
+		recvAddr.sin_port = htons(nodeData->neighbors[i].port);
+		recvAddr.sin_addr.s_addr  = inet_addr(nodeData->neighbors[i].ip);
+		serializeMessage(nodeData, sendBuf);
+		rv = sendto(sendSocket,	sendBuf, strlen(sendBuf), 0, (SOCKADDR *) & recvAddr, sizeof (recvAddr));
+		if (rv < 0) {
+			fprintf(stderr,"sendto() failed to send to neighbor id %d with error: %d\n",nodeData->neighbors[i].procid, WSAGetLastError());
+			closesocket(sendSocket);
+			WSACleanup();
+			return -1;
+		}
+
+	}
+
+}
+
+/*
+*	this thread is responsible of sending update messages to all the neighbors.
+*	a message is sent iff one of the following holds:
+*	1) the process view (namely, the value of myRoot, myCost, myRootTime) has changed.
+*	2) every HELLO_TIMEOUT period of time.
+*/
+int neighborsThread(struct nodeData* nodeData){
+	DWORD waitResult;
+
+	/* as long as the program is running, wait for an update event */
+	while(1) {
+		waitResult = WaitForSingleObject(nodeData->updateEvent, nodeData->HELLOTIMEOUT);
+		switch (waitResult) 
+		{
+			// Event object was signaled
+		case WAIT_OBJECT_0: 
+			sendMessage(nodeData);
+			fprintf(stderr," ... \n");
+			break; 
+		case WAIT_TIMEOUT:
+			sendMessage(nodeData);
+			fprintf(stderr," ... \n");
+			break;
+			// An error occurred
+		default: 
+			printf("Wait error (%d)\n", GetLastError()); 
+			return 0; 
+		}
+
+	}
+}
+
 
 /*	
 *	this function gets a buffer that contains a message from one of the neighbors nodes
@@ -102,7 +172,7 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 		waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
 		switch (waitResult)
 		{
-		/* the thread got ownership of the mutex. entering critical section */
+			/* the thread got ownership of the mutex. entering critical section */
 		case WAIT_OBJECT_0: 
 			__try { 
 				/* check if this is the first time we get this neighbor so we can update it's process id */
@@ -112,37 +182,31 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 				nodeData->myCost = updatedNewCost;
 				nodeData->parent = nodeData->neighbors[neighbor].procid;
 				nodeData->myRootTime = newRootTime /* - TODO passed time since */;
-				nodeData->updated = true;
+				SetEvent(nodeData->updateEvent);
 			} 	
 			__finally { 
 				/* release ownership of the mutex object in any case */
 				if (! ReleaseMutex(nodeData->mutex)) {
-					fprintf(stderr, "ReleaseMutex(): unable to release mutex");
+					fprintf(stderr, "ReleaseMutex(): unable to release mutex\n");
 					return -1;
 				}
 			}
 			break; 
-		/* the thread got ownership of an abandoned mutex. something bad happened... */
+			/* the thread got ownership of an abandoned mutex. something bad happened... */
 		case WAIT_ABANDONED: 
 			return -1; 
 		}		
 	}
-		if (nodeData->updated) {
-			// TODO possibly print an update  (or only print when sending message)
-		}
+	/* check if we updated */
+	if (WaitForSingleObject(nodeData->updateEvent, 0) == WAIT_OBJECT_0) {
+		nodeData->neighbors[neighbor].lastMessageRecvTime = GetTickCount();
+		// TODO possibly print an update  (or only print when sending message)
+	}
 	/* nothing to update */
 	else {
-		nodeData->updated = false;
-		fprintf(stderr, "time=%u\tReceived update from %s, No change",GetTickCount(),nodeData->neighbors[neighbor].ip);
+		//ResetEvent(nodeData->updateEvent); /* reset the event back to unsignaled */
+		fprintf(stderr, "time=%u\tReceived update from %s, No change\n",GetTickCount(),nodeData->neighbors[neighbor].ip);
 	}
-
-}
-
-/*
-*	this thread is responsible of sending update messages to all the neighbors
-*/
-int neighborsThread(struct nodeData* nodeData){
-	// TODO
 }
 
 /*
@@ -183,7 +247,6 @@ int listenerThread(struct nodeData* nodeData) {
 			int neighborId = whichNeighbor(nodeData, &SenderAddr);
 			/* update the node if necessary */
 			updateNode(nodeData, recvBuf, neighborId); // TODO add error handling if have time
-
 		}
 	}
 	exit(0);
@@ -278,10 +341,9 @@ void main(int argc,char* argv[]) {
 			exit(-1);
 		}
 		thisNode.neighbors[i].cost = neighborCost;
-		thisNode.neighbors[i].started = false;
 	}
-	/* turn the update flag on for the node to signal that it's okay to send updates */
-	thisNode.updated = true;
+	/* create updateEvent flag with initial state true  */
+	thisNode.updateEvent = CreateEvent(NULL, TRUE, TRUE, TEXT("updatedNode"));
 	/* initialize the mutex */
 	thisNode.mutex = CreateMutex(NULL, FALSE, NULL);
 	if (thisNode.mutex == NULL){
@@ -291,6 +353,7 @@ void main(int argc,char* argv[]) {
 	/* initialize the time the node is up and running */
 	thisNode.STARTUPTIME = GetTickCount();
 	thisNode.SHUTDOWNTIME = thisNode.STARTUPTIME + thisNode.LIFETIME;
+	thisNode.lastMessagSentTime = 0;
 
 	/* initialize WinSock Library */
 	if(!initWSA()) exit(-1);

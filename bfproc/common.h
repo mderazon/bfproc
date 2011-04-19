@@ -35,7 +35,7 @@ void notifySocketError(const char* pMessage = NULL);
 */
 bool validIP(char* arg_IP);
 
-/*	The function creaes a UDP socket and pass using sock
+/*	The function creates a UDP socket and pass using sock
 *	It returns true if the creation succeeded or false for error
 */
 bool createSocket(SOCKET& sock);
