@@ -30,6 +30,7 @@ struct nodeData {
 	int myCost;
 	DWORD myRootTime;	
 	HANDLE mutex;
+	SOCKET sock;
 };
 
 /*	return true if LIFETIME of the node has expired and false o.w. */
@@ -102,28 +103,17 @@ int sendMessage(struct nodeData* nodeData){
 	struct sockaddr_in recvAddr;
 	char sendBuf[BUF_LEN];
 	/* create new socket to send to neighbor */
-	SOCKET sendSocket;
-	if(!createSocket(sendSocket))
-	{
-		WSACleanup();
-		exit(-1);
-	}
-	/* bind the socket to use the localport for sending too */
-	if(!bindSocket(sendSocket, nodeData->localport)){
-		closesocket(sendSocket);
-		WSACleanup();
-		exit(-1);
-	}
+	
 	serializeMessage(nodeData, sendBuf);
 	int bufLength = strlen(sendBuf);
 	for (i=0; i<nodeData->numOfNeighbors; i++){
 		recvAddr.sin_family = AF_INET;
 		recvAddr.sin_port = htons(nodeData->neighbors[i].port);
 		recvAddr.sin_addr.s_addr  = inet_addr(nodeData->neighbors[i].ip);
-		rv = sendto(sendSocket,	sendBuf, bufLength, 0, (SOCKADDR *) & recvAddr, sizeof (recvAddr));
+		rv = sendto(nodeData->sock, sendBuf, bufLength, 0, (SOCKADDR *) & recvAddr, sizeof (recvAddr));
 		if (rv < 0) {
 			fprintf(stderr,"sendto() failed to send to neighbor id %d with error: %d\n",nodeData->neighbors[i].procid, WSAGetLastError());
-			closesocket(sendSocket);
+			closesocket(nodeData->sock);
 			WSACleanup();
 			return -1;
 		}
@@ -175,7 +165,7 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	DWORD waitResult;
 	int newRoot, newCost, neighborId;
 	DWORD newRootTime;
-	/* deserialize the data members fom the buffer */
+	/* deserialize the data members from the buffer */
 	rv = sscanf(ptr,"%d",newRoot);
 	ptr += rv+1;
 	rv = sscanf(ptr,"%d",newCost);
@@ -243,27 +233,12 @@ DWORD WINAPI listenerThread(LPVOID threadParam) {
 	char recvBuf[BUF_LEN];
 	sockaddr_in SenderAddr;
 	int SenderAddrSize = sizeof (SenderAddr);
-
-
-	/* create new socket for listener */
-	SOCKET listenSocket;
-	if(!createSocket(listenSocket))
-	{
-		WSACleanup();
-		exit(-1);
-	}
-	/* bind socket to localport */
-	if(!bindSocket(listenSocket,nodeData->localport)){
-		closesocket(listenSocket);
-		WSACleanup();
-		exit(-1);
-	}
 	int rv;
 	/* continue listen for messages for entire lifetime of node */
 	while (!lifetimeExpired(nodeData)) {
 		/* perform a quick select, make sure we don't block too much */
-		if (quickSelect(listenSocket, (nodeData->SHUTDOWNTIME - GetTickCount()))) {
-			rv = recvfrom(listenSocket, recvBuf, BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
+		if (quickSelect(nodeData->sock, (nodeData->SHUTDOWNTIME - GetTickCount()))) {
+			rv = recvfrom(nodeData->sock, recvBuf, BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
 			if (rv < 0) {
 				fprintf(stderr,"recvfrom() failed: %ld.\n", WSAGetLastError());
 				exit(-1);
@@ -299,9 +274,17 @@ void main(int argc,char* argv[]) {
 	char* hellotimeout_arg = argv[4];
 	char* maxtime_arg = argv[5];
 
+	/* extract and validate the process id argument */
+	int procid;
+	int rv = sscanf(localport_arg,"%d",&procid);
+	if(rv < 0){
+		fprintf(stderr, "invalid process id [%s]\n",procid_arg);
+		exit(-1);
+	}
+	thisNode.procid = procid;
 	/* extract and validate local port argument */
 	unsigned short localport;
-	int rv = sscanf(localport_arg,"%u",&localport);
+	rv = sscanf(localport_arg,"%u",&localport);
 	if(rv < 0 || localport < MIN_PORT || localport > MAX_PORT){
 		fprintf(stderr, "invalid local port num [%s]\n",localport_arg);
 		exit(-1);
@@ -375,6 +358,8 @@ void main(int argc,char* argv[]) {
 		fprintf(stderr, "CreateMutex error: %d\n", GetLastError());
 		exit(-1);
 	}
+	/* initialize this node's parent to be 0 */
+	thisNode.parent = 0;
 	/* initialize the time the node is up and running */
 	thisNode.STARTUPTIME = GetTickCount();
 	thisNode.SHUTDOWNTIME = thisNode.STARTUPTIME + thisNode.LIFETIME;
@@ -382,6 +367,18 @@ void main(int argc,char* argv[]) {
 
 	/* initialize WinSock Library */
 	if(!initWSA()) exit(-1);
+	/* create socket for communication */
+	if(!createSocket(thisNode.sock))
+	{
+		WSACleanup();
+		exit(-1);
+	}
+	/* bind the socket to use the localport for sending and receiving */ 
+	if(!bindSocket(thisNode.sock, thisNode.localport)){
+		closesocket(thisNode.sock);
+		WSACleanup();
+		exit(-1);
+	}	
 
 	/* END OF INITIALIZATION AND VALIDATION STUFF */
 
