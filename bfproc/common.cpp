@@ -77,11 +77,11 @@ bool validIP(char* arg_IP){
 */
 bool createSocket(SOCKET& sock){
 	SOCKET tmp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); 
-    if (tmp_socket == INVALID_SOCKET)
-    {
-        fprintf(stderr,"socket() - Error at socket(): %ld\n", WSAGetLastError());
-        return false;
-    }
+	if (tmp_socket == INVALID_SOCKET)
+	{
+		fprintf(stderr,"socket() - Error at socket(): %ld\n", WSAGetLastError());
+		return false;
+	}
 	sock = tmp_socket;
 	return true;
 }
@@ -102,6 +102,17 @@ bool bindSocket(SOCKET sock,unsigned short port)
 		fprintf(stderr,"bind() failed: %ld.\n", WSAGetLastError());
 		return false;
 	}
+
+	/* fix for error WSAECONNRESET on recvfrom() as published on website http://www.eng.tau.ac.il/networks/assignments/pa2_faq.htm */
+	DWORD dwBytesReturned = 0;
+	bool bNewBehavior = false;
+	DWORD status = ::WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior), NULL, 0, &dwBytesReturned,NULL, NULL);    
+	if (status == SOCKET_ERROR)
+	{    
+		fprintf(stderr,"bind() failed: %ld.\n", WSAGetLastError());
+	}       
+	/* end of fix */
+
 	return true;
 }
 
@@ -115,33 +126,33 @@ bool quickSelect(SOCKET sock, DWORD time_out)
 
 	// Keep trying until successful or error occurred
 
-		// Use select with 100k usec timeout
-		timeval timeout;
-		timeout.tv_sec = 0;
-		timeout.tv_usec = time_out;
+	// Use select with 100k usec timeout
+	timeval timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = time_out*1000;
 
-		// clear the master and temp sets
-		FD_ZERO(&read_fds);
+	// clear the master and temp sets
+	FD_ZERO(&read_fds);
 
-		// Save the server socket on read_fds set
-		FD_SET(sock, &read_fds);
-		// Perform select with one second timeout
-		int status = select(fdmax + 1, &read_fds, NULL, NULL, &timeout);
-		if (status > 0)
+	// Save the server socket on read_fds set
+	FD_SET(sock, &read_fds);
+	// Perform select with one second timeout
+	int status = select(fdmax + 1, &read_fds, NULL, NULL, &timeout);
+	if (status > 0)
+	{
+		// Is that the fd we were looking for?
+		if (FD_ISSET(sock, &read_fds))
 		{
-			// Is that the fd we were looking for?
-			if (FD_ISSET(sock, &read_fds))
-			{
-				// Our socket is ready for reading!
-				return true;
-			}
+			// Our socket is ready for reading!
+			return true;
 		}
-		else if (status == SOCKET_ERROR)
-		{
-			// Notify error and break the loop
-			fprintf(stderr,"Unable to perform select\n");
-			return false;
-		}
+	}
+	else if (status == SOCKET_ERROR)
+	{
+		// Notify error and break the loop
+		fprintf(stderr,"Unable to perform select\n");
+		return false;
+	}
 
 
 

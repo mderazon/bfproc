@@ -1,5 +1,6 @@
 #include "common.h"
 
+
 /* struct to hold the node's neighbors */
 struct neighbor {
 	DWORD lastMessageRecvTime;
@@ -38,21 +39,6 @@ bool lifetimeExpired(struct nodeData* nodeData) {
 	return GetTickCount() > (nodeData->SHUTDOWNTIME);
 }
 
-/* gets sockaddr_in of the sneder of the message and returns the neighbor's number in this node neighbors list */
-int whichNeighbor(struct nodeData* nodeData, struct sockaddr_in* SenderAddr){
-	unsigned short senderPort = ntohs(SenderAddr->sin_port);
-	char senderIP[BUF_LEN];
-	strcpy(senderIP, inet_ntoa(SenderAddr->sin_addr));	
-	int i;
-	/* look for the neighbor in the nodeData neighbors list */
-	for(i=0; i < nodeData->numOfNeighbors; i++){
-		if (senderIP == nodeData->neighbors[i].ip && senderPort == nodeData->neighbors[i].port){
-			return i;
-		}
-	}
-	/* neighbor not found returning error */
-	return -1;
-}
 
 /*	take the node data and put it as a string in buf so it could be sent to all neighbors 
 *	sets the data as the following string: "myRoot myCost procid myRootTime" */
@@ -133,17 +119,19 @@ DWORD WINAPI neighborsThread(LPVOID threadParam){
 	/* as long as the program is running, wait for an update event */
 	while(1) {
 		waitResult = WaitForSingleObject(nodeData->updateEvent, nodeData->HELLOTIMEOUT);
+		DWORD elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
 		switch (waitResult) 
 		{
 			/* we got an update to the node - sending updates to neighbors */
 		case WAIT_OBJECT_0: 
 			sendMessage(nodeData);
-			fprintf(stderr," ... \n");
+			fprintf(stderr,"time=%d.%d\tSent update to neighbors\n",elapsedTime/1000,(elapsedTime % 1000)/10);
+			ResetEvent(nodeData->updateEvent); /* reset the event back to unsignaled */
 			break;
 			/* we didn't get an update but it's time to send updates to neighbors anyway */
 		case WAIT_TIMEOUT:
 			sendMessage(nodeData);
-			fprintf(stderr," ... \n");
+			fprintf(stderr,"time=%d.%d\tSent HELLO-TIMEOUT update to neighbors\n",elapsedTime/1000,(elapsedTime % 1000)/10);
 			break;
 			/* something bad happened */
 		default: 
@@ -154,6 +142,22 @@ DWORD WINAPI neighborsThread(LPVOID threadParam){
 	}
 }
 
+
+/* gets sockaddr_in of the sneder of the message and returns the neighbor's number in this node neighbors list */
+int whichNeighbor(struct nodeData* nodeData, struct sockaddr_in* SenderAddr){
+	unsigned short senderPort = ntohs(SenderAddr->sin_port);
+	char senderIP[BUF_LEN];
+	strcpy(senderIP, inet_ntoa(SenderAddr->sin_addr));	
+	int i;
+	/* look for the neighbor in the nodeData neighbors list */
+	for(i=0; i < nodeData->numOfNeighbors; i++){
+		if (!strcmp(senderIP,nodeData->neighbors[i].ip) && senderPort == nodeData->neighbors[i].port){
+			return i;
+		}
+	}
+	/* neighbor not found returning error */
+	return -1;
+}
 
 /*	
 *	this function gets a buffer that contains a message from one of the neighbors nodes
@@ -166,13 +170,13 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	int newRoot, newCost, neighborId;
 	DWORD newRootTime;
 	/* deserialize the data members from the buffer */
-	rv = sscanf(ptr,"%d",newRoot);
+	rv = sscanf(ptr,"%d",&newRoot);
 	ptr += rv+1;
-	rv = sscanf(ptr,"%d",newCost);
+	rv = sscanf(ptr,"%d",&newCost);
 	ptr += rv+1;
-	rv = sscanf(ptr,"%d",neighborId);
+	rv = sscanf(ptr,"%d",&neighborId);
 	ptr += rv+1;
-	rv = sscanf(ptr,"%d",newRootTime);
+	rv = sscanf(ptr,"%d",&newRootTime);
 
 	int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
 	int updatedNewCost = newCost + nodeData->neighbors[neighbor].cost ;
@@ -212,6 +216,7 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 		}		
 	}
 	/* check if we updated */
+	DWORD elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
 	if (WaitForSingleObject(nodeData->updateEvent, 0) == WAIT_OBJECT_0) {
 		nodeData->neighbors[neighbor].lastMessageRecvTime = GetTickCount();
 		// TODO possibly print an update  (or only print when sending message)
@@ -219,7 +224,7 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	/* nothing to update */
 	else {
 		//ResetEvent(nodeData->updateEvent); /* reset the event back to unsignaled */
-		fprintf(stderr, "time=%u\tReceived update from %s, No change\n",GetTickCount(),nodeData->neighbors[neighbor].ip);
+		fprintf(stderr, "time=%d.%d\tReceived update from %s, No change\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
 	}
 }
 
@@ -245,6 +250,9 @@ DWORD WINAPI listenerThread(LPVOID threadParam) {
 			}
 			/* check from which neighbor this message came from */
 			int neighborId = whichNeighbor(nodeData, &SenderAddr);
+			if (neighborId == -1){
+				fprintf(stderr,"message received from an unfamiliar source\n");
+			}
 			/* update the node if necessary */
 			updateNode(nodeData, recvBuf, neighborId); // TODO add error handling if have time
 		}

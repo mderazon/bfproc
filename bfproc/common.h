@@ -8,6 +8,7 @@
 //#include <windows.h>
 
 
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR,12) /* part of fix for  error WSAECONNRESET on recvfrom() */
 
 
 #define BUF_LEN 1024
