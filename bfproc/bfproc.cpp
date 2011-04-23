@@ -136,7 +136,8 @@ int sendMessage(struct nodeData* nodeData){
 *	1) the process view (namely, the value of myRoot, myCost, myRootTime) has changed.
 *	2) every HELLO_TIMEOUT period of time.
 */
-int neighborsThread(struct nodeData* nodeData){
+DWORD WINAPI neighborsThread(LPVOID threadParam){
+	struct nodeData* nodeData = (struct nodeData*) threadParam;
 	DWORD waitResult;
 
 	/* as long as the program is running, wait for an update event */
@@ -237,7 +238,8 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 *	from other nodes. only one thread like this exist during the run of the program
 *	and when LIFETIME expires the thread shuts down and the program ends
 */
-int listenerThread(struct nodeData* nodeData) {
+DWORD WINAPI listenerThread(LPVOID threadParam) {
+	struct nodeData* nodeData = (struct nodeData*) threadParam;
 	char recvBuf[BUF_LEN];
 	sockaddr_in SenderAddr;
 	int SenderAddrSize = sizeof (SenderAddr);
@@ -284,7 +286,7 @@ void main(int argc,char* argv[]) {
 	/* INITIALIZATION AND VALIDATION STUFF */
 
 	/* make sure the number of arguments are correct */
-	if ((argc <= 9) || ((argc-6)%3)!=0) {
+	if ((argc < 9) || ((argc-6)%3)!=0) {
 		fprintf(stderr, "usage: %s <procid> <localport> <lifetime> <hellotimeout> <maxtime> <ipaddress1> <port1> <cost1> ...\n",argv[0]);
 		printf("Press any key to continue\n");
 		int i; scanf("%d",&i);
@@ -383,10 +385,36 @@ void main(int argc,char* argv[]) {
 
 	/* END OF INITIALIZATION AND VALIDATION STUFF */
 
-	/* TODO create listener thread */
+	/* create listener thread */
+	HANDLE ListenerThreadHandle = CreateThread( 
+            NULL,					// default security attributes
+            0,						// use default stack size  
+			listenerThread,			// thread function name
+            &thisNode,		        // argument to thread function 
+            0,						// use default creation flags 
+            NULL);					// returns the thread identifier 
+	if (ListenerThreadHandle == NULL) 
+        {
+           fprintf(stderr, "error creating listener thread\n");
+           ExitProcess(3);
+        }
 
-	/* TODO create neighbors threads */
+	/* create neighbors threads */
+	HANDLE NeighborsThreadHandle = CreateThread( 
+            NULL,					// default security attributes
+            0,						// use default stack size  
+			neighborsThread,		// thread function name
+            &thisNode,		        // argument to thread function 
+            0,						// use default creation flags 
+            NULL);					// returns the thread identifier 
+	if (NeighborsThreadHandle == NULL) 
+        {
+           fprintf(stderr, "error creating neighbors thread\n");
+           ExitProcess(3);
+        }
 
+	WaitForSingleObject(ListenerThreadHandle, INFINITE);
+	// TODO add error checking
 	free(thisNode.neighbors);
 	exit(0);
 }

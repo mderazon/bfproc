@@ -2,14 +2,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string>
-#include <sstream>
+//#include <sstream>
 #include <winsock2.h>
 #include <time.h>
-#include <windows.h>
-#include <math.h>
+//#include <windows.h>
 
-#include <conio.h>
-#include <sys/stat.h>
+
 
 
 #define BUF_LEN 1024
