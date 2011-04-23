@@ -53,23 +53,46 @@ int whichNeighbor(struct nodeData* nodeData, struct sockaddr_in* SenderAddr){
 	return -1;
 }
 
-/*	take the node data and put them as a string in buf so it could be sent to all neighbors 
+/*	take the node data and put it as a string in buf so it could be sent to all neighbors 
 *	sets the data as the following string: "myRoot myCost procid myRootTime" */
 int serializeMessage(struct nodeData* nodeData, char* buf) {
 	char* ptr = buf;
 	int rv;
-	rv = sprintf(ptr,"%d",nodeData->myRoot);
-	ptr += rv;
-	*ptr = ' ';
-	rv = sprintf(ptr,"%d",nodeData->myCost);
-	ptr += rv;
-	*ptr = ' ';
-	rv = sprintf(ptr,"%d",nodeData->procid);
-	ptr += rv;
-	*ptr = ' ';
-	rv = sprintf(ptr,"%d",nodeData->myRootTime);
-	ptr += rv;
-	*ptr = 0;
+	DWORD waitResult;
+
+	/* wait for the mutex to be free. block until it's available. */
+	waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
+	switch (waitResult)
+	{
+	/* the thread got ownership of the mutex. entering critical section */
+	case WAIT_OBJECT_0: 
+		__try { 
+			rv = sprintf(ptr,"%d",nodeData->myRoot);
+			ptr += rv;
+			*ptr = ' ';
+			rv = sprintf(ptr,"%d",nodeData->myCost);
+			ptr += rv;
+			*ptr = ' ';
+			rv = sprintf(ptr,"%d",nodeData->procid);
+			ptr += rv;
+			*ptr = ' ';
+			rv = sprintf(ptr,"%d",nodeData->myRootTime);
+			ptr += rv;
+			*ptr = 0;
+		}
+		/* release ownership of the mutex object in any case */
+		__finally { 			
+			if (! ReleaseMutex(nodeData->mutex)) {
+				fprintf(stderr, "ReleaseMutex(): unable to release mutex\n");
+				return -1;
+			}
+		}
+		break; 
+		/* the thread got ownership of an abandoned mutex. something bad happened... */
+	case WAIT_ABANDONED: 
+		return -1; 
+
+	}
 	return 0;
 }
 
@@ -91,21 +114,20 @@ int sendMessage(struct nodeData* nodeData){
 		WSACleanup();
 		exit(-1);
 	}
+	serializeMessage(nodeData, sendBuf);
+	int bufLength = strlen(sendBuf);
 	for (i=0; i<nodeData->numOfNeighbors; i++){
 		recvAddr.sin_family = AF_INET;
 		recvAddr.sin_port = htons(nodeData->neighbors[i].port);
 		recvAddr.sin_addr.s_addr  = inet_addr(nodeData->neighbors[i].ip);
-		serializeMessage(nodeData, sendBuf);
-		rv = sendto(sendSocket,	sendBuf, strlen(sendBuf), 0, (SOCKADDR *) & recvAddr, sizeof (recvAddr));
+		rv = sendto(sendSocket,	sendBuf, bufLength, 0, (SOCKADDR *) & recvAddr, sizeof (recvAddr));
 		if (rv < 0) {
 			fprintf(stderr,"sendto() failed to send to neighbor id %d with error: %d\n",nodeData->neighbors[i].procid, WSAGetLastError());
 			closesocket(sendSocket);
 			WSACleanup();
 			return -1;
 		}
-
 	}
-
 }
 
 /*
@@ -122,16 +144,17 @@ int neighborsThread(struct nodeData* nodeData){
 		waitResult = WaitForSingleObject(nodeData->updateEvent, nodeData->HELLOTIMEOUT);
 		switch (waitResult) 
 		{
-			// Event object was signaled
+			/* we got an update to the node - sending updates to neighbors */
 		case WAIT_OBJECT_0: 
 			sendMessage(nodeData);
 			fprintf(stderr," ... \n");
-			break; 
+			break;
+			/* we didn't get an update but it's time to send updates to neighbors anyway */
 		case WAIT_TIMEOUT:
 			sendMessage(nodeData);
 			fprintf(stderr," ... \n");
 			break;
-			// An error occurred
+			/* something bad happened */
 		default: 
 			printf("Wait error (%d)\n", GetLastError()); 
 			return 0; 
