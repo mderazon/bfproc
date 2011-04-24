@@ -324,8 +324,9 @@ void main(int argc,char* argv[]) {
 	thisNode.numOfNeighbors = numOfNeighbors;
 	thisNode.neighbors = (neighbor*) malloc(numOfNeighbors * sizeof(struct neighbor));
 	for (int i = 0; i < numOfNeighbors; i++){
+		int k = 3*i;
 		/* validates neighbor's IP */
-		char *neighborIP = argv[i+6];		
+		char *neighborIP = argv[k+6];		
 		if(!validIP(neighborIP)){
 			fprintf(stdout, "invalid neighbor's ip address [%s]\n",neighborIP);
 			printf("Press any key to continue\n");
@@ -335,9 +336,9 @@ void main(int argc,char* argv[]) {
 		thisNode.neighbors[i].ip = neighborIP;		
 		/* validates neighbor's port */
 		unsigned short neighborPort;
-		int rv = sscanf(argv[i+7],"%u",&neighborPort);
+		int rv = sscanf(argv[k+7],"%u",&neighborPort);
 		if(rv < 0 || neighborPort < MIN_PORT || neighborPort > MAX_PORT){
-			fprintf(stdout, "invalid neighbor port num [%s]\n",argv[i+7]);
+			fprintf(stdout, "invalid neighbor port num [%s]\n",argv[k+7]);
 			printf("Press any key to continue\n");
 			int j; scanf("%d",&j);
 			exit(-1);
@@ -345,9 +346,9 @@ void main(int argc,char* argv[]) {
 		thisNode.neighbors[i].port = neighborPort;
 		/* validates neighbor's cost */
 		int neighborCost;
-		rv = sscanf(argv[i+8],"%u",&neighborCost);
+		rv = sscanf(argv[k+8],"%u",&neighborCost);
 		if(neighborCost < 1){
-			fprintf(stdout, "invalid neighbor's cost [%s]\n",argv[i+8]);
+			fprintf(stdout, "invalid neighbor's cost [%s]\n",argv[k+8]);
 			printf("Press any key to continue\n");
 			int j; scanf("%d",&j);
 			exit(-1);
@@ -419,8 +420,9 @@ void main(int argc,char* argv[]) {
         }
 
 	WaitForSingleObject(ListenerThreadHandle, INFINITE);
-	// TODO add error checking
 	free(thisNode.neighbors);
+	closesocket(thisNode.sock);
+	WSACleanup();
 	exit(0);
 }
 
