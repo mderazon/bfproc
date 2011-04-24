@@ -1,6 +1,5 @@
 #include "common.h"
 
-
 /* struct to hold the node's neighbors */
 struct neighbor {
 	DWORD lastMessageRecvTime;
@@ -15,23 +14,23 @@ struct neighbor {
 *	the threads are going to change some of these fields constantly
 */
 struct nodeData {
-	HANDLE updateEvent;
-	struct neighbor* neighbors;
-	int numOfNeighbors;
-	int procid;
-	int parentNum;
+	HANDLE updateEvent;				// a handle used to signal update to the process view
+	struct neighbor* neighbors;		// neighbors array
+	int numOfNeighbors;				// number of neighbors
+	int procid;						// this process id
+	int parentNum;					// the parents nmber in the parents array
 	unsigned short localport;
-	DWORD STARTUPTIME;
-	DWORD SHUTDOWNTIME;
-	DWORD LIFETIME;
+	DWORD STARTUPTIME;				// the absolute time the program started
+	DWORD SHUTDOWNTIME;				// the absolute shutdown time of the program
+	DWORD LIFETIME;					// the amount of time the program runs
 	DWORD lastMessagSentTime;
 	DWORD HELLOTIMEOUT;
 	DWORD MAXTIME;
 	int myRoot;
 	int myCost;
-	DWORD myRootTime;	
-	HANDLE mutex;
-	SOCKET sock;
+	DWORD myRootTime;
+	HANDLE mutex;					// a mutex for thread safe work
+	SOCKET sock;					// the socket associated with the process
 };
 
 /*	return true if LIFETIME of the node has expired and false o.w. */
@@ -51,7 +50,7 @@ int serializeMessage(struct nodeData* nodeData, char* buf) {
 	waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
 	switch (waitResult)
 	{
-	/* the thread got ownership of the mutex. entering critical section */
+		/* the thread got ownership of the mutex. entering critical section */
 	case WAIT_OBJECT_0: 
 		__try { 
 			rv = sprintf(ptr,"%d %d %d %d\n",
@@ -83,7 +82,7 @@ int sendMessage(struct nodeData* nodeData){
 	struct sockaddr_in recvAddr;
 	char sendBuf[BUF_LEN];
 	/* create new socket to send to neighbor */
-	
+
 	serializeMessage(nodeData, sendBuf);
 	int bufLength = strlen(sendBuf);
 	for (i=0; i<nodeData->numOfNeighbors; i++){
@@ -167,7 +166,6 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	/* deserialize the data members from the buffer */
 	rv = sscanf(ptr,"%d %d %d %d",&newRoot, &newCost, &neighborId, &newRootTime);
 
-	//int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
 	int updatedNewCost = newCost + nodeData->neighbors[neighbor].cost ;
 	/* check the conditions to update the node data according to the new message */
 	if((newRoot < nodeData->myRoot)||
@@ -179,7 +177,7 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 		waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
 		switch (waitResult)
 		{
-		/* the thread got ownership of the mutex. entering critical section */
+			/* the thread got ownership of the mutex. entering critical section */
 		case WAIT_OBJECT_0: 
 			__try { 
 				/* check if this is the first time we get this neighbor so we can update it's process id */
@@ -203,21 +201,37 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 			/* the thread got ownership of an abandoned mutex. something bad happened... */
 		case WAIT_ABANDONED: 
 			return -1; 
-		}		
+		}
+	}
+	/* check for a crash */
+	DWORD elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
+	if ((GetTickCount() > nodeData->neighbors[nodeData->parentNum].lastMessageRecvTime + nodeData->MAXTIME &&
+		nodeData->neighbors[nodeData->parentNum].lastMessageRecvTime != 0)||
+		neighbor == nodeData->parentNum && newRootTime > nodeData->myRootTime && nodeData->neighbors[neighbor].procid != -1){
+			waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
+			if (waitResult == WAIT_OBJECT_0){
+				nodeData->neighbors[nodeData->parentNum].lastMessageRecvTime = 0;
+				nodeData->myCost = 0;
+				nodeData->myRoot = nodeData->procid;
+				nodeData->myRootTime = INFINITE;
+				nodeData->parentNum = -1;
+				updated = true;
+				fprintf(stdout, "time=%d.%d\tCrash detected.\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
+			}
+			ReleaseMutex(nodeData->mutex);
 	}
 	/* check if we updated */
-	DWORD elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
+	elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
 	if (updated) {
-		nodeData->neighbors[neighbor].lastMessageRecvTime = GetTickCount();
 		fprintf(stdout, "time=%d.%d\tReceived update from %s\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
 		fprintf(stdout, "time=%d.%d\troot:%d parent:%s distance:%d\n",elapsedTime/1000,(elapsedTime % 1000)/10,
 			nodeData->myRoot,nodeData->neighbors[neighbor].ip,nodeData->myCost);
 	}
 	/* nothing to update */
 	else {
-		//ResetEvent(nodeData->updateEvent); /* reset the event back to unsignaled */
-		fprintf(stdout, "time=%d.%d\tReceived update from %s, No change\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
+		fprintf(stdout, "time=%d.%d\tReceived update from %s, No change.\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
 	}
+	nodeData->neighbors[neighbor].lastMessageRecvTime = GetTickCount();
 	return 0;
 }
 
@@ -231,6 +245,11 @@ DWORD WINAPI listenerThread(LPVOID threadParam) {
 	char recvBuf[BUF_LEN];
 	sockaddr_in SenderAddr;
 	int SenderAddrSize = sizeof (SenderAddr);
+
+	DWORD elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
+	fprintf(stdout, "time=%d.%d\troot:%d parent:NULL distance:0\n",elapsedTime/1000,(elapsedTime % 1000)/10,
+		nodeData->myRoot);
+
 	int rv;
 	/* continue listen for messages for entire lifetime of node */
 	while (!lifetimeExpired(nodeData)) {
@@ -247,7 +266,7 @@ DWORD WINAPI listenerThread(LPVOID threadParam) {
 				fprintf(stdout,"message received from an unfamiliar source\n");
 			}
 			/* update the node if necessary */
-			updateNode(nodeData, recvBuf, neighborId); // TODO add error handling if have time
+			updateNode(nodeData, recvBuf, neighborId);
 		}
 	}
 	exit(0);
@@ -393,32 +412,32 @@ void main(int argc,char* argv[]) {
 
 	/* create listener thread */
 	HANDLE ListenerThreadHandle = CreateThread( 
-            NULL,					// default security attributes
-            0,						// use default stack size  
-			listenerThread,			// thread function name
-            &thisNode,		        // argument to thread function 
-            0,						// use default creation flags 
-            NULL);					// returns the thread identifier 
+		NULL,					// default security attributes
+		0,						// use default stack size  
+		listenerThread,			// thread function name
+		&thisNode,		        // argument to thread function 
+		0,						// use default creation flags 
+		NULL);					// returns the thread identifier 
 	if (ListenerThreadHandle == NULL) 
-        {
-           fprintf(stdout, "error creating listener thread\n");
-           ExitProcess(3);
-        }
+	{
+		fprintf(stdout, "error creating listener thread\n");
+		ExitProcess(3);
+	}
 
 	/* create neighbors threads */
 	HANDLE NeighborsThreadHandle = CreateThread( 
-            NULL,					// default security attributes
-            0,						// use default stack size  
-			neighborsThread,		// thread function name
-            &thisNode,		        // argument to thread function 
-            0,						// use default creation flags 
-            NULL);					// returns the thread identifier 
+		NULL,					// default security attributes
+		0,						// use default stack size  
+		neighborsThread,		// thread function name
+		&thisNode,		        // argument to thread function 
+		0,						// use default creation flags 
+		NULL);					// returns the thread identifier 
 	if (NeighborsThreadHandle == NULL) 
-        {
-           fprintf(stdout, "error creating neighbors thread\n");
-           ExitProcess(3);
-        }
-
+	{
+		fprintf(stdout, "error creating neighbors thread\n");
+		ExitProcess(3);
+	}
+	/* wait for the thread to finish */
 	WaitForSingleObject(ListenerThreadHandle, INFINITE);
 	free(thisNode.neighbors);
 	closesocket(thisNode.sock);

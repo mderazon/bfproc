@@ -1,0 +1,30 @@
+Distributed Bellman-Ford
+
+Data Structures:
+----------------
+the main data structure is nodeData which contain some fields as explained in the source file. we pass a pointer to nodeData to all of the functions in the program.
+
+
+Main structure:
+---------------
+our implementation uses two main threads to do the job for us:
+listenerThread() is the thread that is responsible to listen for incoming connection on the localport and to update the node if necessary. it does it by listening for messages until the lifetime of the program expires and waits for a message using select(). when a message arrive from one of the neighbors it calls updateNode() which is the main function that's responsible to update (or not) the node data.
+
+neighborsThread() which is responsible of sending messages to all nodes iff
+1) the process view (namely, the value of myRoot, myCost, myRootTime) has changed.
+2) every HELLO_TIMEOUT period of time.
+
+the program uses same socket for sending and receiving using sendto() and recvfrom() accordingly. the socket is binded to the localport give as one of the arguments to the program
+
+Messages:
+---------
+the program prints to stdout messages when there's an incoming message from one of the neighbors, when the process view has changed and when it sends a HELLO message to the neighbors. also there's a message "crash detected." when one of the nodes in the path to root has crashed
+
+Packet structure:
+-----------------
+the program uses simple packet structure as string "myRoot myCost procid myRootTime".
+the message is being serialized in serializeMessage() function with the use of sprintf. during the serialization the node data is being protected by a mutex so that the process view will not change during the assemble of the message. on the other side, the packets are being received the same way using sscanf().
+
+Testing:
+--------
+to test the program with multiple nodes we have created dummy projects in the same solution. this projects don't have source files, they only use the binary bfproc.exe file that the main project creates and run it with different parameters. to use them it is necessary to define their path to bfproc.exe through the project properties. it is safe to delete the dummy projects if you prefer a different way to test the program.
