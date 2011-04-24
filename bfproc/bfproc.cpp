@@ -19,7 +19,7 @@ struct nodeData {
 	struct neighbor* neighbors;
 	int numOfNeighbors;
 	int procid;
-	int parent;
+	int parentNum;
 	unsigned short localport;
 	DWORD STARTUPTIME;
 	DWORD SHUTDOWNTIME;
@@ -54,23 +54,17 @@ int serializeMessage(struct nodeData* nodeData, char* buf) {
 	/* the thread got ownership of the mutex. entering critical section */
 	case WAIT_OBJECT_0: 
 		__try { 
-			rv = sprintf(ptr,"%d",nodeData->myRoot);
-			ptr += rv;
-			*ptr = ' ';
-			rv = sprintf(ptr,"%d",nodeData->myCost);
-			ptr += rv;
-			*ptr = ' ';
-			rv = sprintf(ptr,"%d",nodeData->procid);
-			ptr += rv;
-			*ptr = ' ';
-			rv = sprintf(ptr,"%d",nodeData->myRootTime);
-			ptr += rv;
-			*ptr = 0;
+			rv = sprintf(ptr,"%d %d %d %d\n",
+				nodeData->myRoot,
+				nodeData->myCost, 
+				nodeData->procid, 
+				(nodeData->myRootTime==INFINITE?nodeData->MAXTIME:nodeData->myRootTime - 
+				(GetTickCount() - nodeData->neighbors[nodeData->parentNum].lastMessageRecvTime)));
 		}
 		/* release ownership of the mutex object in any case */
 		__finally { 			
 			if (! ReleaseMutex(nodeData->mutex)) {
-				fprintf(stderr, "ReleaseMutex(): unable to release mutex\n");
+				fprintf(stdout, "ReleaseMutex(): unable to release mutex\n");
 				return -1;
 			}
 		}
@@ -98,7 +92,7 @@ int sendMessage(struct nodeData* nodeData){
 		recvAddr.sin_addr.s_addr  = inet_addr(nodeData->neighbors[i].ip);
 		rv = sendto(nodeData->sock, sendBuf, bufLength, 0, (SOCKADDR *) & recvAddr, sizeof (recvAddr));
 		if (rv < 0) {
-			fprintf(stderr,"sendto() failed to send to neighbor id %d with error: %d\n",nodeData->neighbors[i].procid, WSAGetLastError());
+			fprintf(stdout,"sendto() failed to send to neighbor id %d with error: %d\n",nodeData->neighbors[i].procid, WSAGetLastError());
 			closesocket(nodeData->sock);
 			WSACleanup();
 			return -1;
@@ -125,17 +119,17 @@ DWORD WINAPI neighborsThread(LPVOID threadParam){
 			/* we got an update to the node - sending updates to neighbors */
 		case WAIT_OBJECT_0: 
 			sendMessage(nodeData);
-			fprintf(stderr,"time=%d.%d\tSent update to neighbors\n",elapsedTime/1000,(elapsedTime % 1000)/10);
+			fprintf(stdout,"time=%d.%d\tSent update to neighbors\n",elapsedTime/1000,(elapsedTime % 1000)/10);
 			ResetEvent(nodeData->updateEvent); /* reset the event back to unsignaled */
 			break;
 			/* we didn't get an update but it's time to send updates to neighbors anyway */
 		case WAIT_TIMEOUT:
 			sendMessage(nodeData);
-			fprintf(stderr,"time=%d.%d\tSent HELLO-TIMEOUT update to neighbors\n",elapsedTime/1000,(elapsedTime % 1000)/10);
+			fprintf(stdout,"time=%d.%d\tSent HELLO-TIMEOUT update to neighbors\n",elapsedTime/1000,(elapsedTime % 1000)/10);
 			break;
 			/* something bad happened */
 		default: 
-			printf("Wait error (%d)\n", GetLastError()); 
+			printf("WaitForSingleObject() error: (%d)\n", GetLastError()); 
 			return 0; 
 		}
 
@@ -165,47 +159,43 @@ int whichNeighbor(struct nodeData* nodeData, struct sockaddr_in* SenderAddr){
 */
 int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	char* ptr = recvBuf;
+	bool updated = false;
 	int rv;
 	DWORD waitResult;
 	int newRoot, newCost, neighborId;
 	DWORD newRootTime;
 	/* deserialize the data members from the buffer */
-	rv = sscanf(ptr,"%d",&newRoot);
-	ptr += rv+1;
-	rv = sscanf(ptr,"%d",&newCost);
-	ptr += rv+1;
-	rv = sscanf(ptr,"%d",&neighborId);
-	ptr += rv+1;
-	rv = sscanf(ptr,"%d",&newRootTime);
+	rv = sscanf(ptr,"%d %d %d %d",&newRoot, &newCost, &neighborId, &newRootTime);
 
-	int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
+	//int updatedMyCost = nodeData->myCost + nodeData->neighbors[neighbor].cost;
 	int updatedNewCost = newCost + nodeData->neighbors[neighbor].cost ;
 	/* check the conditions to update the node data according to the new message */
 	if((newRoot < nodeData->myRoot)||
-		(newRoot == nodeData->myRoot && updatedNewCost < updatedMyCost )||
-		(newRoot == nodeData->myRoot && updatedNewCost == updatedMyCost &&
-		nodeData->neighbors[neighbor].procid < nodeData->procid))
+		(newRoot == nodeData->myRoot && updatedNewCost < nodeData->myCost )||
+		(newRoot == nodeData->myRoot && updatedNewCost == nodeData->myCost &&
+		nodeData->neighbors[neighbor].procid < nodeData->neighbors[nodeData->parentNum].procid))
 	{
 		/* wait for the mutex to be free. block until it's available. */
 		waitResult = WaitForSingleObject(nodeData->mutex,INFINITE);
 		switch (waitResult)
 		{
-			/* the thread got ownership of the mutex. entering critical section */
+		/* the thread got ownership of the mutex. entering critical section */
 		case WAIT_OBJECT_0: 
 			__try { 
 				/* check if this is the first time we get this neighbor so we can update it's process id */
 				if (nodeData->neighbors[neighbor].procid == -1)		
-					nodeData->neighbors[neighbor].procid == neighborId;
+					nodeData->neighbors[neighbor].procid = neighborId;
 				nodeData->myRoot = newRoot;
 				nodeData->myCost = updatedNewCost;
-				nodeData->parent = nodeData->neighbors[neighbor].procid;
-				nodeData->myRootTime = newRootTime /* - TODO passed time since */;
+				nodeData->parentNum = neighbor;
+				nodeData->myRootTime = newRootTime;
 				SetEvent(nodeData->updateEvent);
+				updated = true;
 			} 	
 			__finally { 
 				/* release ownership of the mutex object in any case */
 				if (! ReleaseMutex(nodeData->mutex)) {
-					fprintf(stderr, "ReleaseMutex(): unable to release mutex\n");
+					fprintf(stdout, "ReleaseMutex(): unable to release mutex\n");
 					return -1;
 				}
 			}
@@ -217,15 +207,18 @@ int updateNode(struct nodeData* nodeData, char* recvBuf,int neighbor) {
 	}
 	/* check if we updated */
 	DWORD elapsedTime = GetTickCount() - nodeData->STARTUPTIME;
-	if (WaitForSingleObject(nodeData->updateEvent, 0) == WAIT_OBJECT_0) {
+	if (updated) {
 		nodeData->neighbors[neighbor].lastMessageRecvTime = GetTickCount();
-		// TODO possibly print an update  (or only print when sending message)
+		fprintf(stdout, "time=%d.%d\tReceived update from %s\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
+		fprintf(stdout, "time=%d.%d\troot:%d parent:%s distance:%d\n",elapsedTime/1000,(elapsedTime % 1000)/10,
+			nodeData->myRoot,nodeData->neighbors[neighbor].ip,nodeData->myCost);
 	}
 	/* nothing to update */
 	else {
 		//ResetEvent(nodeData->updateEvent); /* reset the event back to unsignaled */
-		fprintf(stderr, "time=%d.%d\tReceived update from %s, No change\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
+		fprintf(stdout, "time=%d.%d\tReceived update from %s, No change\n",elapsedTime/1000,(elapsedTime % 1000)/10,nodeData->neighbors[neighbor].ip);
 	}
+	return 0;
 }
 
 /*
@@ -245,13 +238,13 @@ DWORD WINAPI listenerThread(LPVOID threadParam) {
 		if (quickSelect(nodeData->sock, (nodeData->SHUTDOWNTIME - GetTickCount()))) {
 			rv = recvfrom(nodeData->sock, recvBuf, BUF_LEN, 0, (SOCKADDR *) & SenderAddr, &SenderAddrSize);
 			if (rv < 0) {
-				fprintf(stderr,"recvfrom() failed: %ld.\n", WSAGetLastError());
+				fprintf(stdout,"recvfrom() failed: %ld.\n", WSAGetLastError());
 				exit(-1);
 			}
 			/* check from which neighbor this message came from */
 			int neighborId = whichNeighbor(nodeData, &SenderAddr);
 			if (neighborId == -1){
-				fprintf(stderr,"message received from an unfamiliar source\n");
+				fprintf(stdout,"message received from an unfamiliar source\n");
 			}
 			/* update the node if necessary */
 			updateNode(nodeData, recvBuf, neighborId); // TODO add error handling if have time
@@ -270,7 +263,7 @@ void main(int argc,char* argv[]) {
 
 	/* make sure the number of arguments are correct */
 	if ((argc < 9) || ((argc-6)%3)!=0) {
-		fprintf(stderr, "usage: %s <procid> <localport> <lifetime> <hellotimeout> <maxtime> <ipaddress1> <port1> <cost1> ...\n",argv[0]);
+		fprintf(stdout, "usage: %s <procid> <localport> <lifetime> <hellotimeout> <maxtime> <ipaddress1> <port1> <cost1> ...\n",argv[0]);
 		printf("Press any key to continue\n");
 		int i; scanf("%d",&i);
 		exit(-1);
@@ -284,9 +277,9 @@ void main(int argc,char* argv[]) {
 
 	/* extract and validate the process id argument */
 	int procid;
-	int rv = sscanf(localport_arg,"%d",&procid);
+	int rv = sscanf(procid_arg,"%d",&procid);
 	if(rv < 0){
-		fprintf(stderr, "invalid process id [%s]\n",procid_arg);
+		fprintf(stdout, "invalid process id [%s]\n",procid_arg);
 		exit(-1);
 	}
 	thisNode.procid = procid;
@@ -294,7 +287,7 @@ void main(int argc,char* argv[]) {
 	unsigned short localport;
 	rv = sscanf(localport_arg,"%u",&localport);
 	if(rv < 0 || localport < MIN_PORT || localport > MAX_PORT){
-		fprintf(stderr, "invalid local port num [%s]\n",localport_arg);
+		fprintf(stdout, "invalid local port num [%s]\n",localport_arg);
 		exit(-1);
 	}
 	thisNode.localport = localport;
@@ -302,7 +295,7 @@ void main(int argc,char* argv[]) {
 	DWORD lifetime;
 	rv = sscanf(lifetime_arg,"%u",&lifetime);
 	if(rv < 0){
-		fprintf(stderr, "invalid LIFETIME value [%s]\n",lifetime_arg);
+		fprintf(stdout, "invalid LIFETIME value [%s]\n",lifetime_arg);
 		exit(-1);
 	}
 	thisNode.LIFETIME = lifetime * 1000;
@@ -310,7 +303,7 @@ void main(int argc,char* argv[]) {
 	DWORD hellotimeout;
 	rv = sscanf(hellotimeout_arg,"%u",&hellotimeout);
 	if(rv < 0){
-		fprintf(stderr, "invalid HELLOTIMEOUT value [%s]\n",hellotimeout_arg);
+		fprintf(stdout, "invalid HELLOTIMEOUT value [%s]\n",hellotimeout_arg);
 		exit(-1);
 	}
 	thisNode.HELLOTIMEOUT = hellotimeout * 1000;
@@ -318,10 +311,13 @@ void main(int argc,char* argv[]) {
 	DWORD maxtime;
 	rv = sscanf(maxtime_arg,"%u",&maxtime);
 	if(rv < 0){
-		fprintf(stderr, "invalid MAXTIME value [%s]\n",maxtime_arg);
+		fprintf(stdout, "invalid MAXTIME value [%s]\n",maxtime_arg);
 		exit(-1);
 	}
 	thisNode.MAXTIME = maxtime * 1000;
+	thisNode.myCost = 0;
+	thisNode.myRoot = thisNode.procid;
+	thisNode.myRootTime = INFINITE;
 
 	/* process the neighbors list */
 	int numOfNeighbors = (argc-6)/3;
@@ -331,7 +327,7 @@ void main(int argc,char* argv[]) {
 		/* validates neighbor's IP */
 		char *neighborIP = argv[i+6];		
 		if(!validIP(neighborIP)){
-			fprintf(stderr, "invalid neighbor's ip address [%s]\n",neighborIP);
+			fprintf(stdout, "invalid neighbor's ip address [%s]\n",neighborIP);
 			printf("Press any key to continue\n");
 			int j; scanf("%d",&j);
 			exit(-1);
@@ -341,37 +337,41 @@ void main(int argc,char* argv[]) {
 		unsigned short neighborPort;
 		int rv = sscanf(argv[i+7],"%u",&neighborPort);
 		if(rv < 0 || neighborPort < MIN_PORT || neighborPort > MAX_PORT){
-			fprintf(stderr, "invalid neighbor port num [%s]\n",argv[i+7]);
+			fprintf(stdout, "invalid neighbor port num [%s]\n",argv[i+7]);
 			printf("Press any key to continue\n");
 			int j; scanf("%d",&j);
 			exit(-1);
 		}
 		thisNode.neighbors[i].port = neighborPort;
-		/* validates neighbor's port */
+		/* validates neighbor's cost */
 		int neighborCost;
 		rv = sscanf(argv[i+8],"%u",&neighborCost);
 		if(neighborCost < 1){
-			fprintf(stderr, "invalid neighbor's cost [%s]\n",argv[i+8]);
+			fprintf(stdout, "invalid neighbor's cost [%s]\n",argv[i+8]);
 			printf("Press any key to continue\n");
 			int j; scanf("%d",&j);
 			exit(-1);
 		}
 		thisNode.neighbors[i].cost = neighborCost;
+		/* reset neighbor process id to be -1 */
+		thisNode.neighbors[i].procid = -1;
 	}
 	/* create updateEvent flag with initial state true  */
 	thisNode.updateEvent = CreateEvent(NULL, TRUE, TRUE, TEXT("updatedNode"));
 	/* initialize the mutex */
 	thisNode.mutex = CreateMutex(NULL, FALSE, NULL);
 	if (thisNode.mutex == NULL){
-		fprintf(stderr, "CreateMutex error: %d\n", GetLastError());
+		fprintf(stdout, "CreateMutex error: %d\n", GetLastError());
 		exit(-1);
 	}
 	/* initialize this node's parent to be 0 */
-	thisNode.parent = 0;
+	thisNode.parentNum = -1;
 	/* initialize the time the node is up and running */
 	thisNode.STARTUPTIME = GetTickCount();
 	thisNode.SHUTDOWNTIME = thisNode.STARTUPTIME + thisNode.LIFETIME;
 	thisNode.lastMessagSentTime = 0;
+
+
 
 	/* initialize WinSock Library */
 	if(!initWSA()) exit(-1);
@@ -400,7 +400,7 @@ void main(int argc,char* argv[]) {
             NULL);					// returns the thread identifier 
 	if (ListenerThreadHandle == NULL) 
         {
-           fprintf(stderr, "error creating listener thread\n");
+           fprintf(stdout, "error creating listener thread\n");
            ExitProcess(3);
         }
 
@@ -414,7 +414,7 @@ void main(int argc,char* argv[]) {
             NULL);					// returns the thread identifier 
 	if (NeighborsThreadHandle == NULL) 
         {
-           fprintf(stderr, "error creating neighbors thread\n");
+           fprintf(stdout, "error creating neighbors thread\n");
            ExitProcess(3);
         }
 
