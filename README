@@ -1,4 +1,12 @@
 Distributed Bellman-Ford
+++++++++++++++++++++++++
+
+Michael Derazon	021767348
+Mattan Shalev	200182202 
+
+source code and complete code history also available at
+https://github.com/mderazon
+
 
 Data Structures:
 ----------------
@@ -13,8 +21,9 @@ listenerThread() is the thread that is responsible to listen for incoming connec
 neighborsThread() which is responsible of sending messages to all nodes iff
 1) the process view (namely, the value of myRoot, myCost, myRootTime) has changed.
 2) every HELLO_TIMEOUT period of time.
+the thread operates through the entire lifetime of the program until it is closed and sends messages according to the conditions above.
 
-the program uses same socket for sending and receiving using sendto() and recvfrom() accordingly. the socket is binded to the localport give as one of the arguments to the program
+the program uses same socket for sending and receiving using sendto() and recvfrom() accordingly. it is safe to use same socket since sendto() and recvfrom() are thread safe and can operate at the same time. the socket is binded to the localport given as one of the arguments to the program
 
 Messages:
 ---------
@@ -27,4 +36,4 @@ the message is being serialized in serializeMessage() function with the use of s
 
 Testing:
 --------
-to test the program with multiple nodes we have created dummy projects in the same solution. this projects don't have source files, they only use the binary bfproc.exe file that the main project creates and run it with different parameters. to use them it is necessary to define their path to bfproc.exe through the project properties. it is safe to delete the dummy projects if you prefer a different way to test the program.
+to test the program with multiple nodes on the same machine we have created dummy projects in the same solution. these projects don't have source files, they only use the binary bfproc.exe file that the main project creates and run it with different parameters. to use them it is necessary to define their path to bfproc.exe through the project properties. it is safe to delete the dummy projects. we have omitted the dummy project from the solution, but it's very easy to add them back as explained above.
