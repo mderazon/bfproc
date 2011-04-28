@@ -1,6 +1,6 @@
 #include "common.h"
 
-/* struct to hold the node's neighbors */
+/* struct to hold the node's neighbors  */
 struct neighbor {
 	DWORD lastMessageRecvTime;
 	int procid;

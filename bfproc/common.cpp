@@ -3,7 +3,7 @@
 
 
 
-/*	The function closes notidies that we had a socket error.
+/*	The function closes notidies that we had a socket error. 
 *	It can get an extra text message using pMessage.	
 */
 void notifySocketError(const char* pMessage)
